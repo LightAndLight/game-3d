@@ -29,6 +29,7 @@ executable game-3d
   -- other-extensions:
   build-depends:       base <5
                      , gloss >=1.13 && <1.14
+                     , lens >=4.15 && <4.16
                      , linear >=1.20 && <1.21
                      , reflex >=0.5 && <0.6
                      , reflex-gloss >=0.3 && <0.4

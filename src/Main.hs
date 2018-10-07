@@ -3,21 +3,25 @@
 {-# language RecursiveDo #-}
 module Main where
 
+import Debug.Trace
+
 import Reflex
 import Reflex.Gloss
+import Reflex.Workflow (Workflow(..), workflow)
 import Control.Applicative (liftA2)
+import Control.Lens.Setter ((+~))
 import Control.Monad (void, join)
 import Data.Foldable (toList)
 import Data.Function ((&))
 import Data.Semigroup ((<>))
 import Graphics.Gloss (Display(..), Picture, white, blank, line, lineLoop, color, black, circle)
-import Linear.Epsilon (Epsilon)
+import Linear.Epsilon (Epsilon, nearZero)
 import Linear.Matrix ((!*!), (!*), M44, M24, mkTransformation)
-import Linear.Metric (dot, normalize, norm)
+import Linear.Metric (Metric, dot, normalize, norm)
 import Linear.Projection (perspective)
 import Linear.Quaternion (axisAngle, rotate)
 import Linear.V2 (V2(..))
-import Linear.V3 (V3(..), cross)
+import Linear.V3 (V3(..), cross, _x, _y)
 import Linear.V4 (V4(..))
 import Linear.Vector ((^*))
 
@@ -75,6 +79,9 @@ data Camera a
   , gazeVector :: V3 a
   }
 
+angleBetween :: (Floating a, Metric f) => f a -> f a -> a
+angleBetween x y = acos $ dot x y / (norm x * norm y)
+
 nearPlane, farPlane :: Floating a => a
 nearPlane = 1
 farPlane = 1024
@@ -131,51 +138,43 @@ main =
       eRightPressed = select inputs $ GE_Key (Just $ Char 'd') (Just Down) Nothing
       eRightReleased = select inputs $ GE_Key (Just $ Char 'd') (Just Up) Nothing
 
-      eTurnLeftPressed =
-        void (select inputs $ GE_Key (Just $ SpecialKey KeyLeft) (Just Down) Nothing) <>
-        void (select inputs $ GE_Key (Just $ Char 'q') (Just Down) Nothing)
-      eTurnLeftReleased =
-        void (select inputs $ GE_Key (Just $ SpecialKey KeyLeft) (Just Up) Nothing) <>
-        void (select inputs $ GE_Key (Just $ Char 'q') (Just Up) Nothing)
+      eMouseMoved = select inputs GE_Motion
 
-      eTurnRightPressed =
-        void (select inputs $ GE_Key (Just $ SpecialKey KeyRight) (Just Down) Nothing) <>
-        void (select inputs $ GE_Key (Just $ Char 'e') (Just Down) Nothing)
-      eTurnRightReleased =
-        void (select inputs $ GE_Key (Just $ SpecialKey KeyRight) (Just Up) Nothing) <>
-        void (select inputs $ GE_Key (Just $ Char 'e') (Just Up) Nothing)
+      eSpacePressed =
+        select inputs $ GE_Key (Just $ SpecialKey KeySpace) (Just Down) Nothing
 
       vel = 3
-      avel = 3
 
     dMoveForward <- holdDyn False $ leftmost [True <$ eForwardPressed, False <$ eForwardReleased]
     dMoveBackward <- holdDyn False $ leftmost [True <$ eBackwardPressed, False <$ eBackwardReleased]
     dMoveLeft <- holdDyn False $ leftmost [True <$ eLeftPressed, False <$ eLeftReleased]
     dMoveRight <- holdDyn False $ leftmost [True <$ eRightPressed, False <$ eRightReleased]
-    dTurnRight <- holdDyn False $ leftmost [True <$ eTurnRightPressed, False <$ eTurnRightReleased]
-    dTurnLeft <- holdDyn False $ leftmost [True <$ eTurnLeftPressed, False <$ eTurnLeftReleased]
 
-    rec
-      dCameraAngularVelocity <-
-        holdDyn (axisAngle 0 0) $
-        (\tl tr ->
-           foldr (.) id
-           [ if tl then (+) (axisAngle (V3 0 1 0) (-avel/180*pi)) else id
-           , if tr then (+) (axisAngle (V3 0 1 0) (avel/180*pi)) else id
-           ]
-           (axisAngle 0 0)) <$>
-        current dTurnLeft <*>
-        current dTurnRight <@
-        eRefresh
+    dMousePosition <- holdDyn 0 $ uncurry V2 <$> eMouseMoved
 
-    rec
-      dCameraDirection <-
-        fmap (fmap normalize) .
-        holdDyn (V3 0 0 1) $
-        rotate <$>
-        current dCameraAngularVelocity <*>
-        current dCameraDirection <@
-        eRefresh
+    dCameraDirection <-
+      let
+        w = Workflow $ do
+          dMouseDelta <-
+            holdDyn 0 $
+            (\old new -> new - old) <$>
+            current dMousePosition <@>
+            leftmost [updated dMousePosition, current dMousePosition <@ eRefresh]
+          rec
+            d <- holdDyn (V3 0 0 1) $
+              (\dir v@(V2 deltaX deltaY) ->
+                 if nearZero v
+                 then dir
+                 else
+                   let
+                     delta = dir & _x +~ deltaX & _y +~ deltaY
+                   in
+                     rotate (axisAngle (cross dir delta) (angleBetween dir delta / 100)) dir) <$>
+              current d <@>
+              updated dMouseDelta
+          pure (d, w <$ eSpacePressed)
+      in
+        join <$> workflow w
 
     rec
       dCameraVelocity <-
